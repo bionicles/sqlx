@@ -122,7 +122,7 @@ fn load_password_from_reader(
             trim_newline(&mut line);
             match load_password_from_line(&line, host, port, username, database) {
                 Err(err) => {
-                    tracing::warn!(line = line, "Malformed line in pgpass file: {err}");
+                    tracing::warn!("Malformed line in pgpass file: {err}");
                 }
                 Ok(Some(password)) => return Some(password),
                 Ok(None) => (),
@@ -235,6 +235,35 @@ fn find_next_field<'a>(line: &mut &'a str) -> Result<Cow<'a, str>, PGPassLinePar
 mod tests {
     use super::*;
     use std::borrow::Cow;
+
+    #[test]
+    fn malformed_reader_entry_keeps_lookup_without_disclosing_contents() {
+        use std::io::{Read, Seek};
+        use std::sync::Arc;
+
+        let mut output = tempfile::tempfile().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(Arc::new(output.try_clone().unwrap()))
+            .finish();
+        let password = tracing::subscriber::with_default(subscriber, || {
+            load_password_from_reader(
+                &b"*:*:*:private-marker\n*:*:*:*:valid-password\n"[..],
+                "localhost",
+                5432,
+                "user",
+                Some("database"),
+            )
+        });
+        assert_eq!(password.as_deref(), Some("valid-password"));
+        output.rewind().unwrap();
+        let mut logged = String::new();
+        output.read_to_string(&mut logged).unwrap();
+        assert!(logged.contains("Malformed line in pgpass file: Unexpected end of line"));
+        assert!(!logged.contains("private-marker"));
+        assert!(!logged.contains("valid-password"));
+    }
 
     #[test]
     fn test_find_next_field() {
